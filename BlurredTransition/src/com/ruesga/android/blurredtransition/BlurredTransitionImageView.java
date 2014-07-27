@@ -67,7 +67,6 @@ public class BlurredTransitionImageView extends ImageView {
             if (radius == mLastBlurRadius) {
                 return;
             }
-System.out.println("interpolatedTime: " + interpolatedTime + "; radius: " + radius);
 
             Bitmap out = bitmap.copy(bitmap.getConfig(), true);
             final Allocation input = Allocation.createFromBitmap(mRs, out,
