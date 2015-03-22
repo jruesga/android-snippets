@@ -1,5 +1,5 @@
-BlurredTransition
-=================
+ResultAnimationDrawable
+=======================
 
 A sample animatable drawable for displaying action results (success/error)
 
