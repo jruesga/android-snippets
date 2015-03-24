@@ -34,7 +34,6 @@ import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.util.AttributeSet;
-import android.util.TypedValue;
 import android.view.View;
 import android.view.animation.AccelerateInterpolator;
 import android.widget.ImageView;
@@ -285,8 +284,7 @@ public class RefreshAnimationView extends ImageView {
                     (mStrokeWidth / 2) + (mIntrinsicBounds.height() - diagonal) / 2);
 
             // Create the arrow triangle
-            final float offset = -1 * TypedValue.applyDimension(
-                    TypedValue.COMPLEX_UNIT_DIP, 1, getResources().getDisplayMetrics());
+            final float offset = 0.2f * getResources().getDisplayMetrics().density;
             float radius = Math.min(mIntrinsicBounds.width(), mIntrinsicBounds.height()) / 2;
             mArrowPointX = (float)(radius * Math.cos(DEFAULT_SWEEP_ANGLE * Math.PI / 180f))
                     + getBounds().centerX() + offset;
@@ -302,9 +300,9 @@ public class RefreshAnimationView extends ImageView {
 
         private void createArrowPath(float delta) {
             float maxDistance = mStrokeWidth - (mStrokeWidth / 2f);
-            float deltaDistance = (mStrokeWidth / 1.5f) + (maxDistance * delta);
+            float deltaDistance = mStrokeWidth + (maxDistance * delta);
             float inverseDeltaDistance = (mStrokeWidth / 2f) - (maxDistance * delta);
-            float height = mStrokeWidth * 1.5f * delta;
+            float height = mStrokeWidth * 2f * delta;
 
             mArrowPath.reset();
             mArrowPath.moveTo(mArrowPointX - deltaDistance, mArrowPointY);
@@ -445,6 +443,7 @@ public class RefreshAnimationView extends ImageView {
     }
 
     public void setColor(int color) {
+        mDrawable.mColorActivated = color;
         mDrawable.mPaint.setColor(color);
         mDrawable.mArrowPaint.setColor(color);
     }
