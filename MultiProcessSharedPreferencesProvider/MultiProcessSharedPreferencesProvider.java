@@ -29,6 +29,7 @@ import android.preference.PreferenceManager;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.util.Pair;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -42,6 +43,8 @@ import java.util.Map;
 import java.util.Set;
 
 public class MultiProcessSharedPreferencesProvider extends ContentProvider {
+
+    private static final String TAG = "MultiProcessPreferences";
 
     private static final String AUTHORITY = "com.android.providers";
 
@@ -61,7 +64,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
     private static final String FIELD_KEY = "key";
     private static final String FIELD_VALUE = "value";
 
-    public static final String[] PROJECTION = {
+    private static final String[] PROJECTION = {
         FIELD_KEY,
         FIELD_VALUE
     };
@@ -85,10 +88,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         switch (match) {
             case PREFERENCES_DATA:
                 return "vnd.android.cursor.dir/" + PREFERENCES_ENTITY;
-            case PREFERENCES_DATA_ID:
-                return "vnd.android.cursor.item/" + PREFERENCES_ENTITY;
             default:
-                throw new IllegalArgumentException("Unknown URL");
+                return "vnd.android.cursor.item/" + PREFERENCES_ENTITY;
         }
     }
 
@@ -143,14 +144,15 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
     @Override
     public Uri insert(@NonNull Uri uri, ContentValues values) {
 
-        String key;
+        String key = null;
         int match = sURLMatcher.match(uri);
+        int count = 0;
         switch (match) {
             case PREFERENCES_DATA:
                 SharedPreferences.Editor editor = mPreferences.edit();
                 key = (String) values.get(FIELD_KEY);
                 Object value = values.get(FIELD_VALUE);
-                if(value != null) {
+                if (value != null) {
                     if (value instanceof Boolean) {
                         editor.putBoolean(key, (Boolean) value);
                     } else if (value instanceof Long) {
@@ -171,15 +173,20 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                     editor.remove(key);
                 }
                 editor.apply();
+                count = 1;
                 break;
             default:
-                throw new IllegalArgumentException("Cannot insert from URL: " + uri);
+                Log.w(TAG, "Cannot insert URI: " + uri);
+                break;
         }
 
         // Notify
-        Uri notifyUri = uri.buildUpon().appendEncodedPath(key).build();
-        notifyChange(notifyUri);
-        return notifyUri;
+        if (count > 0) {
+            Uri notifyUri = uri.buildUpon().appendEncodedPath(key).build();
+            notifyChange(notifyUri);
+            return notifyUri;
+        }
+        return null;
     }
 
     @Override
@@ -198,10 +205,13 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 }
                 break;
             default:
-                throw new IllegalArgumentException("Cannot delete from URL: " + uri);
+                Log.w(TAG, "Cannot delete URI: " + uri);
+                break;
         }
 
-        notifyChange(uri);
+        if (count > 0) {
+            notifyChange(uri);
+        }
         return count;
     }
 
@@ -215,7 +225,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 SharedPreferences.Editor editor = mPreferences.edit();
                 final String key = uri.getPathSegments().get(1);
                 Object value = values.get(FIELD_VALUE);
-                if(value != null) {
+                if (value != null) {
                     if (value instanceof Boolean) {
                         editor.putBoolean(key, (Boolean) value);
                     } else if (value instanceof Long) {
@@ -232,17 +242,20 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                             editor.putString(key, (String) value);
                         }
                     }
-                    count = 1;
                 } else {
                     editor.remove(key);
                 }
+                count = 1;
                 editor.apply();
                 break;
             default:
-                throw new IllegalArgumentException("Cannot update from URL: " + uri);
+                Log.w(TAG, "Cannot update URI: " + uri);
+                break;
         }
 
-        notifyChange(uri);
+        if (count > 0) {
+            notifyChange(uri);
+        }
         return count;
     }
 
@@ -273,7 +286,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
     public static MultiProcessSharedPreferences getDefaultSharedPreferences(Context context) {
         if (sInstance == null) {
-            sInstance = new MultiProcessSharedPreferences(context);
+            sInstance = new MultiProcessSharedPreferences(context.getApplicationContext());
         }
         return sInstance;
     }
@@ -396,6 +409,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 }
             }
         };
+        private boolean mObserving = false;
 
         private final Context mContext;
         private final List<OnSharedPreferenceChangeListener> mListeners = new ArrayList<>();
@@ -404,12 +418,16 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
             mContext = context;
             Uri uri = CONTENT_URI.buildUpon().appendPath(PREFERENCES_ENTITY).build();
             context.getContentResolver().registerContentObserver(uri, true, mObserver);
+            mObserving = true;
         }
 
         @Override
         protected void finalize() throws Throwable {
             super.finalize();
-            mContext.getContentResolver().unregisterContentObserver(mObserver);
+            if (mObserving) {
+                mContext.getContentResolver().unregisterContentObserver(mObserver);
+                mObserving = false;
+            }
         }
 
         @Override
@@ -443,7 +461,11 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                         values.put(key, value);
                     }
                 } finally {
-                    c.close();
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
                 }
             }
             return values;
@@ -467,7 +489,11 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 return c.getString(c.getColumnIndexOrThrow(FIELD_VALUE));
             } finally {
                 if (c != null) {
-                    c.close();
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
                 }
             }
         }
@@ -504,7 +530,11 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 return defValues;
             } finally {
                 if (c != null) {
-                    c.close();
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
                 }
             }
         }
@@ -526,7 +556,11 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 return c.getInt(c.getColumnIndexOrThrow(FIELD_VALUE));
             } finally {
                 if (c != null) {
-                    c.close();
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
                 }
             }
         }
@@ -548,7 +582,11 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 return c.getLong(c.getColumnIndexOrThrow(FIELD_VALUE));
             } finally {
                 if (c != null) {
-                    c.close();
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
                 }
             }
         }
@@ -570,7 +608,11 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 return c.getFloat(c.getColumnIndexOrThrow(FIELD_VALUE));
             } finally {
                 if (c != null) {
-                    c.close();
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
                 }
             }
         }
@@ -592,7 +634,11 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 return Boolean.parseBoolean(c.getString(c.getColumnIndexOrThrow(FIELD_VALUE)));
             } finally {
                 if (c != null) {
-                    c.close();
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        // Ignore
+                    }
                 }
             }
         }
