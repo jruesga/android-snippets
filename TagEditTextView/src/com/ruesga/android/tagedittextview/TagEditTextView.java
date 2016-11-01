@@ -27,10 +27,10 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
-import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Message;
+import android.support.annotation.NonNull;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.SpannableStringBuilder;
@@ -52,7 +52,6 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -61,6 +60,7 @@ import java.util.regex.Pattern;
  * A {@link View} to edit hash tags(#) and user tags(@).
  */
 // TODO Add support for RTL
+@SuppressWarnings("unused")
 public class TagEditTextView extends LinearLayout {
 
     private class TagEditText extends EditText {
@@ -78,7 +78,7 @@ public class TagEditTextView extends LinearLayout {
         }
 
         @Override
-        public boolean onTouchEvent(MotionEvent event) {
+        public boolean onTouchEvent(@NonNull MotionEvent event) {
             if (mReadOnly) {
                 return false;
             }
@@ -120,6 +120,10 @@ public class TagEditTextView extends LinearLayout {
         void onTagRemove(Tag tag);
     }
 
+    public interface OnComputedTagEndedListener {
+        void onComputedTagEnded();
+    }
+
     public static class Tag {
         public CharSequence mTag;
         public int mColor;
@@ -127,7 +131,14 @@ public class TagEditTextView extends LinearLayout {
         private int w;
         private int h;
 
-        private Tag swallowCopy() {
+        public CharSequence toPlainTag() {
+            if (mTag != null && mTag.length() > 2) {
+                return mTag.subSequence(1, mTag.length());
+            }
+            return "";
+        }
+
+        public Tag copy() {
             Tag tag = new Tag();
             tag.mTag = mTag;
             tag.mColor = mColor;
@@ -180,24 +191,34 @@ public class TagEditTextView extends LinearLayout {
             }
 
             // Check if we need to create a new chip
-            String text = s.toString();
-            int textLength = text.length();
-            boolean isCreateChip = false;
-            if (textLength > 0) {
-                String lastChar = text.substring(textLength - 1);
-                isCreateChip = NON_UNICODE_CHAR_PATTERN.matcher(lastChar).matches();
-            }
-            if (isCreateChip) {
-                createChip(s);
-            } else if (mTriggerTagCreationThreshold > 0) {
-                int start = mTagList.size();
-                String tagText = s.subSequence(start, textLength).toString().trim();
-                if (tagText.length() >= CREATE_CHIP_LENGTH_THRESHOLD) {
-                    mHandler.removeMessages(MESSAGE_CREATE_CHIP);
-                    mHandler.sendMessageDelayed(
-                            mHandler.obtainMessage(MESSAGE_CREATE_CHIP),
-                            mTriggerTagCreationThreshold);
+            mLockEdit = true;
+            try {
+                String text = s.toString();
+                int textLength = text.length();
+                boolean isCreateChip = false;
+                boolean nextIsTag = false;
+                if (textLength > 0) {
+                    String lastChar = text.substring(textLength - 1);
+                    if (lastChar.charAt(0) != VALID_TAGS.charAt(1) || mSupportsUserTags) {
+                        isCreateChip = NON_UNICODE_CHAR_PATTERN.matcher(lastChar).matches();
+                        nextIsTag = VALID_TAGS.contains(lastChar);
+                    }
                 }
+                if (isCreateChip || nextIsTag) {
+                    createChip(s, nextIsTag);
+                    notifyComputeTagEnded();
+                } else if (mTriggerTagCreationThreshold > 0) {
+                    int start = mTagList.size();
+                    String tagText = s.subSequence(start, textLength).toString().trim();
+                    if (tagText.length() >= CREATE_CHIP_LENGTH_THRESHOLD) {
+                        mHandler.removeMessages(MESSAGE_CREATE_CHIP);
+                        mHandler.sendMessageDelayed(
+                                mHandler.obtainMessage(MESSAGE_CREATE_CHIP),
+                                mTriggerTagCreationThreshold);
+                    }
+                }
+            } finally {
+                mLockEdit = false;
             }
         }
     };
@@ -205,7 +226,7 @@ public class TagEditTextView extends LinearLayout {
     private Handler.Callback mTagMessenger = new Handler.Callback() {
         @Override
         public boolean handleMessage(Message msg) {
-            switch (msg.what){
+            switch (msg.what) {
                 case MESSAGE_CREATE_CHIP:
                     Editable s = mTagEdit.getEditableText();
                     s.insert(s.length(), CHIP_REPLACEMENT_CHAR);
@@ -221,7 +242,7 @@ public class TagEditTextView extends LinearLayout {
             "(?<=^|(?<=[^a-zA-Z0-9-_\\\\.]))@([\\p{L}]+[\\p{L}0-9_]+)");
     private static final Pattern NON_UNICODE_CHAR_PATTERN = Pattern.compile("[^\\p{L}0-9_#@]");
 
-    private static final char[] VALID_TAGS = new char[]{'#', '@'};
+    private static final String VALID_TAGS = "#@";
 
     private static final String CHIP_SEPARATOR_CHAR = " ";
     private static final String CHIP_REPLACEMENT_CHAR = ".";
@@ -229,7 +250,7 @@ public class TagEditTextView extends LinearLayout {
     private static final int MESSAGE_CREATE_CHIP = 0;
 
     private static final long CREATE_CHIP_LENGTH_THRESHOLD = 3L;
-    private static final long CREATE_CHIP_DEFUALT_DELAYED_TIMEOUT = 1500L;
+    private static final long CREATE_CHIP_DEFAULT_DELAYED_TIMEOUT = 1500L;
 
     private static float ONE_PIXEL = 0f;
     private static final Typeface CHIP_TYPEFACE = Typeface.create("Helvetica", Typeface.BOLD);
@@ -244,12 +265,13 @@ public class TagEditTextView extends LinearLayout {
     private long mTriggerTagCreationThreshold;
     private boolean mReadOnly;
     private KeyListener mEditModeKeyListener;
-    private Drawable mEditModeBackground;
 
     private TAG_MODE mDefaultTagMode;
+    private boolean mSupportsUserTags = true;
 
     private Handler mHandler;
     private final List<OnTagEventListener> mTagEventCallBacks = new ArrayList<>();
+    private final List<OnComputedTagEndedListener> mComputeTagCallbacks = new ArrayList<>();
 
     private boolean mLockEdit;
 
@@ -276,7 +298,7 @@ public class TagEditTextView extends LinearLayout {
 
     private void init() {
         mHandler = new Handler(mTagMessenger);
-        mTriggerTagCreationThreshold = CREATE_CHIP_DEFUALT_DELAYED_TIMEOUT;
+        mTriggerTagCreationThreshold = CREATE_CHIP_DEFAULT_DELAYED_TIMEOUT;
 
         // Create the internal EditText that holds the tag logic
         mTagEdit = new TagEditText(getContext());
@@ -329,7 +351,6 @@ public class TagEditTextView extends LinearLayout {
 
         // Save the keyListener for later restore
         mEditModeKeyListener = mTagEdit.getKeyListener();
-        mEditModeBackground = mTagEdit.getBackground();
 
         // Initialize resources for chips
         mChipBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -356,6 +377,14 @@ public class TagEditTextView extends LinearLayout {
         mDefaultTagMode = TAG_MODE.HASH;
     }
 
+    public void computeTags(OnComputedTagEndedListener cb) {
+        mHandler.removeMessages(MESSAGE_CREATE_CHIP);
+        if (cb != null) {
+            mComputeTagCallbacks.add(cb);
+        }
+        mHandler.sendMessage(mHandler.obtainMessage(MESSAGE_CREATE_CHIP));
+    }
+
     private void onTagRemoveClick(final Tag tag) {
         Editable s = mTagEdit.getEditableText();
         int position = mTagList.indexOf(tag);
@@ -376,6 +405,31 @@ public class TagEditTextView extends LinearLayout {
         });
     }
 
+    public boolean isSupportsUserTags() {
+        return mSupportsUserTags;
+    }
+
+    public void setSupportsUserTags(boolean supportsUserTags) {
+        mSupportsUserTags = supportsUserTags;
+        mDefaultTagMode = TAG_MODE.HASH;
+        mTagEdit.setHint(supportsUserTags
+                ? R.string.tagedit_textview_hint :R.string.tagedit_textview_tag_only_hint);
+        if (!supportsUserTags) {
+            for (Tag tag : getTags()) {
+                if (tag.mTag.charAt(0) == VALID_TAGS.charAt(1)) {
+                    tag.mTag = VALID_TAGS.substring(0, 1) + tag.mTag.subSequence(1, tag.mTag.length());
+                }
+            }
+            refresh();
+        }
+    }
+
+    @Override
+    public void setEnabled(boolean enabled) {
+        super.setEnabled(enabled);
+        refresh();
+    }
+
     public boolean getReadOnlyMode() {
         return mReadOnly;
     }
@@ -386,7 +440,9 @@ public class TagEditTextView extends LinearLayout {
         mTagEdit.setFocusable(!mReadOnly);
         mTagEdit.setFocusableInTouchMode(!mReadOnly);
         mTagEdit.setKeyListener(mReadOnly ? null : mEditModeKeyListener);
-        mTagEdit.setBackground(mReadOnly ? null : mEditModeBackground);
+        mTagEdit.setEnabled(!mReadOnly);
+        mTagEdit.setFocusable(!mReadOnly);
+        mTagEdit.setFocusableInTouchMode(!mReadOnly);
     }
 
     public TAG_MODE getDefaultTagMode() {
@@ -406,19 +462,26 @@ public class TagEditTextView extends LinearLayout {
     }
 
     public void addTagEventListener(OnTagEventListener callback) {
-        mTagEventCallBacks.add(callback);
+        if (!mTagEventCallBacks.contains(callback)) {
+            mTagEventCallBacks.add(callback);
+        }
     }
 
     public void removeTagEventListener(OnTagEventListener callback) {
-        mTagEventCallBacks.remove(callback);
+        if (mTagEventCallBacks.contains(callback)) {
+            mTagEventCallBacks.remove(callback);
+        }
     }
 
+    private void refresh() {
+        setTags(getTags());
+    }
 
     public Tag[] getTags() {
         Tag[] tags = new Tag[mTagList.size()];
         int count = mTagList.size();
         for (int i = 0; i < count; i++) {
-            tags[i] = mTagList.get(i).swallowCopy();
+            tags[i] = mTagList.get(i).copy();
         }
         return tags;
     }
@@ -436,7 +499,7 @@ public class TagEditTextView extends LinearLayout {
         for (Tag tag : tags) {
             Matcher hashTagMatcher = HASH_TAG_PATTERN.matcher(tag.mTag);
             Matcher userTagMatcher = USER_TAG_PATTERN.matcher(tag.mTag);
-            if (hashTagMatcher.matches() || userTagMatcher.matches()) {
+            if (hashTagMatcher.matches() || (mSupportsUserTags && userTagMatcher.matches())) {
                 mTagList.add(tag);
             }
         }
@@ -466,25 +529,25 @@ public class TagEditTextView extends LinearLayout {
         mTagEdit.setSelection(mTagEdit.getText().length());
     }
 
-    private void createChip(Editable s) {
-        String text = s.toString();
+    private void createChip(Editable s, boolean nextIsTag) {
         int start = mTagList.size();
-        int end = text.length();
+        int end = s.length() + (nextIsTag ? -1 : 0);
         String tagText = s.subSequence(start, end).toString().trim();
         tagText = NON_UNICODE_CHAR_PATTERN.matcher(tagText).replaceAll("");
-        if (tagText.isEmpty()) {
+        if (tagText.isEmpty() || tagText.length() <= 1) {
             // User is still writing
             return;
         }
-        if (Arrays.binarySearch(VALID_TAGS, tagText.charAt(0)) < 0) {
-            char tag = mDefaultTagMode == TAG_MODE.HASH ? VALID_TAGS[0] : VALID_TAGS[1];
+        String charText = tagText.substring(0, 1);
+        if (!VALID_TAGS.contains(charText) ||
+                (charText.charAt(0) == VALID_TAGS.charAt(1) && !mSupportsUserTags)) {
+            char tag = mDefaultTagMode == TAG_MODE.HASH
+                    ? VALID_TAGS.charAt(0) : VALID_TAGS.charAt(1);
             tagText = tag + tagText;
         }
 
         // Replace the new tag
-        mLockEdit = true;
         s.replace(start, end, CHIP_REPLACEMENT_CHAR);
-        mLockEdit = false;
 
         // Create the tag and its spannable
         final Tag tag = new Tag();
@@ -495,7 +558,6 @@ public class TagEditTextView extends LinearLayout {
         tag.w = b.getWidth();
         tag.h = b.getHeight();
         mTagList.add(tag);
-
 
         notifyTagCreated(tag);
     }
@@ -509,7 +571,7 @@ public class TagEditTextView extends LinearLayout {
         if (tag.mColor == 0) {
             tag.mColor = newRandomColor();
         }
-        mChipBgPaint.setColor(tag.mColor);
+        mChipBgPaint.setColor((isEnabled()) ? tag.mColor : Color.LTGRAY);
 
         // Measure the chip rect
         int padding = (int) ONE_PIXEL * 2;
@@ -538,17 +600,41 @@ public class TagEditTextView extends LinearLayout {
         return color;
     }
 
-    private void notifyTagCreated(Tag tag) {
-        Tag copy = tag.swallowCopy();
-        for (OnTagEventListener cb : mTagEventCallBacks) {
-            cb.onTagCreate(copy);
-        }
+    private void notifyTagCreated(final Tag tag) {
+        mHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                Tag copy = tag.copy();
+                for (OnTagEventListener cb : mTagEventCallBacks) {
+                    cb.onTagCreate(copy);
+                }
+            }
+        });
+
     }
 
-    private void notifyTagRemoved(Tag tag) {
-        Tag copy = tag.swallowCopy();
-        for (OnTagEventListener cb : mTagEventCallBacks) {
-            cb.onTagRemove(copy);
-        }
+    private void notifyTagRemoved(final Tag tag) {
+        mHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                Tag copy = tag.copy();
+                for (OnTagEventListener cb : mTagEventCallBacks) {
+                    cb.onTagRemove(copy);
+                }
+            }
+        });
+    }
+
+    private void notifyComputeTagEnded() {
+        mHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                int count = mComputeTagCallbacks.size();
+                for (int i = count - 1; i >= 0; i--) {
+                    mComputeTagCallbacks.get(i).onComputedTagEnded();
+                    mComputeTagCallbacks.remove(i);
+                }
+            }
+        });
     }
 }
