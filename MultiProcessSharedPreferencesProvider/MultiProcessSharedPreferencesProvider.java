@@ -29,6 +29,7 @@ import android.preference.PreferenceManager;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.util.Pair;
+import android.util.Base64;
 import android.util.Log;
 
 import org.json.JSONArray;
@@ -118,7 +119,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 break;
 
             case PREFERENCES_DATA_ID:
-                final String key = uri.getPathSegments().get(1);
+                final String key = decodePath(uri.getPathSegments().get(1));
                 map = mPreferences.getAll();
                 if (map.containsKey(key)) {
                     c = new MatrixCursor(PROJECTION);
@@ -182,7 +183,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
         // Notify
         if (count > 0) {
-            Uri notifyUri = uri.buildUpon().appendEncodedPath(key).build();
+            Uri notifyUri = uri.buildUpon().appendPath(encodePath(key)).build();
             notifyChange(notifyUri);
             return notifyUri;
         }
@@ -198,7 +199,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 mPreferences.edit().clear().apply();
                 break;
             case PREFERENCES_DATA_ID:
-                final String key = uri.getPathSegments().get(1);
+                final String key = decodePath(uri.getPathSegments().get(1));
                 if (mPreferences.contains(key)) {
                     mPreferences.edit().remove(key).apply();
                     count = 0;
@@ -223,7 +224,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         switch (match) {
             case PREFERENCES_DATA_ID:
                 SharedPreferences.Editor editor = mPreferences.edit();
-                final String key = uri.getPathSegments().get(1);
+                final String key = decodePath(uri.getPathSegments().get(1));
                 Object value = values.get(FIELD_VALUE);
                 if (value != null) {
                     if (value instanceof Boolean) {
@@ -297,45 +298,55 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
             private final Context mContext;
             private final List<Pair<String, Object>> mValues;
+            private final Set<String> mRemovedEntries;
+            private boolean mClearAllFlag;
 
             public MultiProcessEditor(Context context) {
                 mContext = context;
                 mValues = new ArrayList<>();
+                mRemovedEntries = new HashSet<>();
+                mClearAllFlag = false;
             }
 
             @Override
             public Editor putString(String key, String value) {
                 mValues.add(new Pair<>(key, (Object) value));
+                mRemovedEntries.remove(key);
                 return this;
             }
 
             @Override
             public Editor putStringSet(String key, Set<String> values) {
                 mValues.add(new Pair<>(key, (Object) values));
+                mRemovedEntries.remove(key);
                 return this;
             }
 
             @Override
             public Editor putInt(String key, int value) {
                 mValues.add(new Pair<>(key, (Object) value));
+                mRemovedEntries.remove(key);
                 return this;
             }
 
             @Override
             public Editor putLong(String key, long value) {
                 mValues.add(new Pair<>(key, (Object) value));
+                mRemovedEntries.remove(key);
                 return this;
             }
 
             @Override
             public Editor putFloat(String key, float value) {
                 mValues.add(new Pair<>(key, (Object) value));
+                mRemovedEntries.remove(key);
                 return this;
             }
 
             @Override
             public Editor putBoolean(String key, boolean value) {
                 mValues.add(new Pair<>(key, (Object) value));
+                mRemovedEntries.remove(key);
                 return this;
             }
 
@@ -343,17 +354,19 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
             public Editor remove(String key) {
                 Iterator<Pair<String, Object>> it = mValues.iterator();
                 while (it.hasNext()) {
-                    Pair<String, Object> v = it.next();
-                    if (v.first.equals(key)) {
+                    if (it.next().first.equals(key)) {
                         it.remove();
                         break;
                     }
                 }
+                mRemovedEntries.add(key);
                 return this;
             }
 
             @Override
             public Editor clear() {
+                mClearAllFlag = true;
+                mRemovedEntries.clear();
                 mValues.clear();
                 return this;
             }
@@ -361,12 +374,16 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
             @Override
             @SuppressWarnings("unchecked")
             public boolean commit() {
-                Iterator<Pair<String, Object>> it = mValues.iterator();
+                if (mClearAllFlag) {
+                    Uri uri = CONTENT_URI.buildUpon().appendPath(PREFERENCES_ENTITY).build();
+                    mContext.getContentResolver().delete(uri, null, null);
+                }
+                mClearAllFlag = false;
+
                 ContentValues values = new ContentValues();
-                while (it.hasNext()) {
-                    Pair<String, Object> v = it.next();
+                for (Pair<String, Object> v : mValues) {
                     Uri uri = CONTENT_URI.buildUpon().appendPath(
-                            PREFERENCES_ENTITY).appendPath(v.first).build();
+                            PREFERENCES_ENTITY).appendPath(encodePath(v.first)).build();
                     values.put(FIELD_KEY, v.first);
                     if (v.second instanceof Boolean) {
                         values.put(FIELD_VALUE, (Boolean) v.second);
@@ -381,10 +398,16 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                     } else if (v.second instanceof Set) {
                         values.put(FIELD_VALUE, marshallSet((Set<String>) v.second));
                     } else {
-                        throw new IllegalArgumentException();
+                        throw new IllegalArgumentException("Unsupported type for key " + v.first);
                     }
 
                     mContext.getContentResolver().update(uri, values, null, null);
+                }
+
+                for (String key : mRemovedEntries) {
+                    Uri uri = CONTENT_URI.buildUpon().appendPath(
+                            PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
+                    mContext.getContentResolver().delete(uri, null, null);
                 }
                 return true;
             }
@@ -475,7 +498,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Override
         public String getString(String key, String defValue) {
             Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendEncodedPath(key).build();
+                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
             Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
@@ -502,7 +525,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Override
         public Set<String> getStringSet(String key, Set<String> defValues) {
             Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendEncodedPath(key).build();
+                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
             Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
@@ -542,7 +565,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Override
         public int getInt(String key, int defValue) {
             Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendEncodedPath(key).build();
+                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
             Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
@@ -568,7 +591,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Override
         public long getLong(String key, long defValue) {
             Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendEncodedPath(key).build();
+                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
             Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
@@ -594,7 +617,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Override
         public float getFloat(String key, float defValue) {
             Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendEncodedPath(key).build();
+                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
             Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
@@ -620,7 +643,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Override
         public boolean getBoolean(String key, boolean defValue) {
             Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendEncodedPath(key).build();
+                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
             Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
@@ -662,5 +685,13 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener cb) {
             mListeners.remove(cb);
         }
+    }
+
+    private static String encodePath(String path) {
+        return new String(Base64.encode(path.getBytes(), Base64.NO_WRAP));
+    }
+
+    private static String decodePath(String path) {
+        return new String(Base64.decode(path.getBytes(), Base64.NO_WRAP));
     }
 }
