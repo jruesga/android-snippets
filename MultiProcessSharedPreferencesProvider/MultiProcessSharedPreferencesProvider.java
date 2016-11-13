@@ -24,11 +24,13 @@ import android.database.ContentObserver;
 import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Handler;
 import android.preference.PreferenceManager;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.util.Pair;
+import android.text.TextUtils;
 import android.util.Base64;
 import android.util.Log;
 
@@ -50,6 +52,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
     private static final String AUTHORITY = "com.android.providers";
 
     private static final String PREFERENCES_ENTITY = "preferences";
+    private static final String PREFERENCE_ENTITY = "preference";
 
     private static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY);
 
@@ -58,8 +61,14 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
     private static final UriMatcher sURLMatcher = new UriMatcher(UriMatcher.NO_MATCH);
     static {
-        sURLMatcher.addURI(AUTHORITY, PREFERENCES_ENTITY, PREFERENCES_DATA);
-        sURLMatcher.addURI(AUTHORITY, PREFERENCES_ENTITY + "/*", PREFERENCES_DATA_ID);
+        sURLMatcher.addURI(
+                AUTHORITY,
+                PREFERENCES_ENTITY + "/*/" + PREFERENCE_ENTITY,
+                PREFERENCES_DATA);
+        sURLMatcher.addURI(
+                AUTHORITY,
+                PREFERENCES_ENTITY + "/*/" + PREFERENCE_ENTITY + "/*",
+                PREFERENCES_DATA_ID);
     }
 
     private static final String FIELD_KEY = "key";
@@ -70,16 +79,22 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         FIELD_VALUE
     };
 
-
     private Context mContext;
-    private SharedPreferences mPreferences;
+    private Map<String, SharedPreferences> mPreferences = new HashMap<>();
 
     @Override
     @SuppressWarnings("ConstantConditions")
     public boolean onCreate() {
         mContext = getContext().getApplicationContext();
-        mPreferences = PreferenceManager.getDefaultSharedPreferences(mContext);
         return false;
+    }
+
+    private synchronized SharedPreferences getSharedPreferences(Uri uri) {
+        String name = decodePath(uri.getPathSegments().get(1));
+        if (!mPreferences.containsKey(name)) {
+            mPreferences.put(name, mContext.getSharedPreferences(name, Context.MODE_PRIVATE));
+        }
+        return mPreferences.get(name);
     }
 
     @Nullable
@@ -104,7 +119,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         int match = sURLMatcher.match(uri);
         switch (match) {
             case PREFERENCES_DATA:
-                Map<String, ?> map = mPreferences.getAll();
+                Map<String, ?> map = getSharedPreferences(uri).getAll();
                 c = new MatrixCursor(PROJECTION);
                 for (String key : map.keySet()) {
                     MatrixCursor.RowBuilder row = c.newRow();
@@ -119,8 +134,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 break;
 
             case PREFERENCES_DATA_ID:
-                final String key = decodePath(uri.getPathSegments().get(1));
-                map = mPreferences.getAll();
+                final String key = decodePath(uri.getPathSegments().get(3));
+                map = getSharedPreferences(uri).getAll();
                 if (map.containsKey(key)) {
                     c = new MatrixCursor(PROJECTION);
                     MatrixCursor.RowBuilder row = c.newRow();
@@ -150,7 +165,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         int count = 0;
         switch (match) {
             case PREFERENCES_DATA:
-                SharedPreferences.Editor editor = mPreferences.edit();
+                SharedPreferences.Editor editor = getSharedPreferences(uri).edit();
                 key = (String) values.get(FIELD_KEY);
                 Object value = values.get(FIELD_VALUE);
                 if (value != null) {
@@ -195,13 +210,13 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         int count = 0;
         switch (sURLMatcher.match(uri)) {
             case PREFERENCES_DATA:
-                count = mPreferences.getAll().size();
-                mPreferences.edit().clear().apply();
+                count = getSharedPreferences(uri).getAll().size();
+                getSharedPreferences(uri).edit().clear().apply();
                 break;
             case PREFERENCES_DATA_ID:
-                final String key = decodePath(uri.getPathSegments().get(1));
-                if (mPreferences.contains(key)) {
-                    mPreferences.edit().remove(key).apply();
+                final String key = decodePath(uri.getPathSegments().get(3));
+                if (getSharedPreferences(uri).contains(key)) {
+                    getSharedPreferences(uri).edit().remove(key).apply();
                     count = 0;
                 }
                 break;
@@ -223,8 +238,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         int match = sURLMatcher.match(uri);
         switch (match) {
             case PREFERENCES_DATA_ID:
-                SharedPreferences.Editor editor = mPreferences.edit();
-                final String key = decodePath(uri.getPathSegments().get(1));
+                SharedPreferences.Editor editor = getSharedPreferences(uri).edit();
+                final String key = decodePath(uri.getPathSegments().get(3));
                 Object value = values.get(FIELD_VALUE);
                 if (value != null) {
                     if (value instanceof Boolean) {
@@ -282,27 +297,40 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         return set;
     }
 
-
-    private static MultiProcessSharedPreferences sInstance;
+    private static Map<String, MultiProcessSharedPreferences> sInstances = new HashMap<>();
 
     public static MultiProcessSharedPreferences getDefaultSharedPreferences(Context context) {
-        if (sInstance == null) {
-            sInstance = new MultiProcessSharedPreferences(context.getApplicationContext());
+        final String defaultName;
+        if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            defaultName = PreferenceManager.getDefaultSharedPreferencesName(context);
+        } else {
+            defaultName = context.getPackageName() + "_preferences";
         }
-        return sInstance;
+        return getSharedPreferences(context, defaultName);
+    }
+
+    public static MultiProcessSharedPreferences getSharedPreferences(Context context, String name) {
+        if (!sInstances.containsKey(name)) {
+            sInstances.put(name, new MultiProcessSharedPreferences(
+                    context.getApplicationContext(), name));
+        }
+        return sInstances.get(name);
     }
 
     public static class MultiProcessSharedPreferences implements SharedPreferences {
+        private final String mPreferencesFileName;
 
-        public static class MultiProcessEditor implements Editor {
+        private static class MultiProcessEditor implements Editor {
 
             private final Context mContext;
+            private final String mPreferencesFileName;
             private final List<Pair<String, Object>> mValues;
             private final Set<String> mRemovedEntries;
             private boolean mClearAllFlag;
 
-            public MultiProcessEditor(Context context) {
+            private MultiProcessEditor(Context context, String name) {
                 mContext = context;
+                mPreferencesFileName = name;
                 mValues = new ArrayList<>();
                 mRemovedEntries = new HashSet<>();
                 mClearAllFlag = false;
@@ -375,15 +403,14 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
             @SuppressWarnings("unchecked")
             public boolean commit() {
                 if (mClearAllFlag) {
-                    Uri uri = CONTENT_URI.buildUpon().appendPath(PREFERENCES_ENTITY).build();
+                    Uri uri = resolveUri(null, mPreferencesFileName);
                     mContext.getContentResolver().delete(uri, null, null);
                 }
                 mClearAllFlag = false;
 
                 ContentValues values = new ContentValues();
                 for (Pair<String, Object> v : mValues) {
-                    Uri uri = CONTENT_URI.buildUpon().appendPath(
-                            PREFERENCES_ENTITY).appendPath(encodePath(v.first)).build();
+                    Uri uri = resolveUri(v.first, mPreferencesFileName);
                     values.put(FIELD_KEY, v.first);
                     if (v.second instanceof Boolean) {
                         values.put(FIELD_VALUE, (Boolean) v.second);
@@ -405,8 +432,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
                 }
 
                 for (String key : mRemovedEntries) {
-                    Uri uri = CONTENT_URI.buildUpon().appendPath(
-                            PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
+                    Uri uri = resolveUri(key, mPreferencesFileName);
                     mContext.getContentResolver().delete(uri, null, null);
                 }
                 return true;
@@ -426,9 +452,12 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
             @Override
             public void onChange(boolean selfChange, Uri uri) {
-                String key = uri.getLastPathSegment();
-                for (OnSharedPreferenceChangeListener cb : mListeners) {
-                    cb.onSharedPreferenceChanged(MultiProcessSharedPreferences.this, key);
+                String name = decodePath(uri.getPathSegments().get(1));
+                if (name.equals(mPreferencesFileName)) {
+                    String key = decodePath(uri.getLastPathSegment());
+                    for (OnSharedPreferenceChangeListener cb : mListeners) {
+                        cb.onSharedPreferenceChanged(MultiProcessSharedPreferences.this, key);
+                    }
                 }
             }
         };
@@ -437,8 +466,9 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         private final Context mContext;
         private final List<OnSharedPreferenceChangeListener> mListeners = new ArrayList<>();
 
-        public MultiProcessSharedPreferences(Context context) {
+        private MultiProcessSharedPreferences(Context context, String name) {
             mContext = context;
+            mPreferencesFileName = name;
             Uri uri = CONTENT_URI.buildUpon().appendPath(PREFERENCES_ENTITY).build();
             context.getContentResolver().registerContentObserver(uri, true, mObserver);
             mObserving = true;
@@ -453,11 +483,15 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
             }
         }
 
+        public String getSharedPreferencesName() {
+            return mPreferencesFileName;
+        }
+
         @Override
         public Map<String, ?> getAll() {
             Map<String, Object> values = new HashMap<>();
-            Uri uri = CONTENT_URI.buildUpon().appendPath(PREFERENCES_ENTITY).build();
-            Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
+            Cursor c = mContext.getContentResolver().query(
+                    resolveUri(null, mPreferencesFileName), PROJECTION, null, null, null);
             if (c != null) {
                 try {
                     while (c.moveToNext()) {
@@ -497,9 +531,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Nullable
         @Override
         public String getString(String key, String defValue) {
-            Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
-            Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
+            Cursor c = mContext.getContentResolver().query(
+                    resolveUri(key, mPreferencesFileName), PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
                     return defValue;
@@ -524,9 +557,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
         @Nullable
         @Override
         public Set<String> getStringSet(String key, Set<String> defValues) {
-            Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
-            Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
+            Cursor c = mContext.getContentResolver().query(
+                    resolveUri(key, mPreferencesFileName), PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
                     return defValues;
@@ -564,9 +596,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
         @Override
         public int getInt(String key, int defValue) {
-            Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
-            Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
+            Cursor c = mContext.getContentResolver().query(
+                    resolveUri(key, mPreferencesFileName), PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
                     return defValue;
@@ -590,9 +621,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
         @Override
         public long getLong(String key, long defValue) {
-            Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
-            Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
+            Cursor c = mContext.getContentResolver().query(
+                    resolveUri(key, mPreferencesFileName), PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
                     return defValue;
@@ -616,9 +646,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
         @Override
         public float getFloat(String key, float defValue) {
-            Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
-            Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
+            Cursor c = mContext.getContentResolver().query(
+                    resolveUri(key, mPreferencesFileName), PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
                     return defValue;
@@ -642,9 +671,8 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
         @Override
         public boolean getBoolean(String key, boolean defValue) {
-            Uri uri = CONTENT_URI.buildUpon().appendPath(
-                    PREFERENCES_ENTITY).appendPath(encodePath(key)).build();
-            Cursor c = mContext.getContentResolver().query(uri, PROJECTION, null, null, null);
+            Cursor c = mContext.getContentResolver().query(
+                    resolveUri(key, mPreferencesFileName), PROJECTION, null, null, null);
             try {
                 if (c == null || !c.moveToFirst()) {
                     return defValue;
@@ -673,7 +701,7 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
         @Override
         public Editor edit() {
-            return new MultiProcessEditor(mContext);
+            return new MultiProcessEditor(mContext, mPreferencesFileName);
         }
 
         @Override
@@ -693,5 +721,17 @@ public class MultiProcessSharedPreferencesProvider extends ContentProvider {
 
     private static String decodePath(String path) {
         return new String(Base64.decode(path.getBytes(), Base64.NO_WRAP));
+    }
+
+    public static Uri resolveUri(String key, String prefFileName) {
+        Uri.Builder builder =
+                CONTENT_URI.buildUpon()
+                        .appendPath(PREFERENCES_ENTITY)
+                        .appendPath(encodePath(prefFileName))
+                        .appendPath(PREFERENCE_ENTITY);
+        if (!TextUtils.isEmpty(key)) {
+            builder = builder.appendPath(encodePath(key));
+        }
+        return builder.build();
     }
 }
