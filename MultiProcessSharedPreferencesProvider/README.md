@@ -4,8 +4,8 @@ MultiProcessSharedPreferencesProvider
 A multiprocess SharedPreferences implementation backed by a ContentProvider.
 
 Since M, Context.MODE_MULTI_PROCESS was deprecated because it behaves different
-depending on the version and device. This class to use SharedPreferences across
-different processes in safe way
+depending on the version and device. This class provides a way to use
+SharedPreferences across different processes in safe way.
 
 ### How to use
 
@@ -22,11 +22,12 @@ your manifest
 2.- And use it in the same way you used the SharedPreferences one
 
 ```java
-MultiProcessSharedPreferencesProvider prefs =
-    MultiProcessSharedPreferencesProvider.getDefaultSharedPreferences(
-        ctx.getApplicationContext());
-prefs.setString(key, value);
-prefs.apply();
+MultiProcessSharedPreferencesProvider.MultiProcessSharedPreferences prefs =
+        MultiProcessSharedPreferencesProvider.getDefaultSharedPreferences(
+                getContext());
+SharedPreferences.Editor editor = prefs.edit();
+editor.putString("test", "value");
+editor.apply();
 ```
 
 Even you can register a listener to listen to prefs changing as you do
